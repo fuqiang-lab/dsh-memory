@@ -647,14 +647,27 @@ console.log('project context: the rules are injected in order')
   })
   check(anchor.includes('**本项目规则**'), 'a project with rules gets a rules block')
   check(anchor.includes('共 2 条'), 'the heading counts the rules')
-  check(anchor.includes('**提交信息格式**（`commit-message-style`）'), 'a rule renders its title and name')
+  // The rule file's own `# title` is what names a rule: a per-rule heading here
+  // would print the same title twice in a row.
+  check(!anchor.includes('**提交信息格式**'), 'no bold heading is printed above a rule')
+  check(!anchor.includes('**不用破折号**'), 'the second rule gets no bold heading either')
+  // ...but the kebab-case name stays, so a rule can still be cited by name and
+  // mapped to the file a rewrite would touch. It costs one short line and
+  // duplicates no words from the title.
+  check(anchor.includes('  `commit-message-style`'), 'a rule prints its kebab-case name on its own line')
+  check(anchor.includes('  `no-em-dash`'), 'the second rule prints its name too')
   check(anchor.includes('提交信息用中文。'), 'the first rule body is injected')
-  check(anchor.includes('  第一行写结论，正文写清改了什么。'), 'rule bodies are indented under their heading')
-  check(anchor.includes('**不用破折号**（`no-em-dash`）'), 'the second rule is injected too')
+  check(anchor.includes('  第一行写结论，正文写清改了什么。'), 'rule bodies are indented under the block heading')
   check(anchor.includes('用户可见文案里不要用破折号。'), 'the second rule body is injected')
-  check(anchor.indexOf('**提交信息格式**') < anchor.indexOf('**不用破折号**'), 'the rules keep their order')
+  // indexOf() returns -1 for a missing needle, which would make this ordering
+  // check pass on two absent bodies, so both are asserted present first.
+  const firstBody = anchor.indexOf('提交信息用中文。')
+  const secondBody = anchor.indexOf('用户可见文案里不要用破折号。')
+  check(firstBody !== -1 && secondBody !== -1 && firstBody < secondBody, 'the rules keep their order')
   check(anchor.includes('还有规则未全部注入'), 'a truncated rule list says more rules exist')
-  check(anchor.indexOf('**本项目规则**') < anchor.indexOf('**记忆写入**'), 'the rules read before the tool usage guide')
+  const rulesBlockAt = anchor.indexOf('**本项目规则**')
+  const usageAt = anchor.indexOf('**记忆写入**')
+  check(rulesBlockAt !== -1 && usageAt !== -1 && rulesBlockAt < usageAt, 'the rules read before the tool usage guide')
 }
 {
   const { anchor } = await assemble({})

@@ -38,6 +38,10 @@ dsh-memory-*.md
 .tmp_*
 *.log
 
+# Scratch tree for ad-hoc probes and reproduction scripts written while
+# diagnosing a report. Disposable and full of local paths, so never committed.
+Temp/
+
 # Scratch directory used by local experiments and probes; its contents are
 # regenerable and include local paths and probe databases.
 .memtest/

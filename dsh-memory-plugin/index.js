@@ -1380,6 +1380,13 @@ export function apply(ctx, rawConfig) {
      * newest first. While no day file exists yet, the newest DB work lines
      * stand in as a fallback; a project with neither emits nothing rather than
      * spending resident tokens advertising emptiness.
+     *
+     * Each rule body is injected verbatim under one block heading. A rule file
+     * starts with its own `# title`, so adding a per-rule heading here printed
+     * the same title twice in a row and read like the rule had loaded twice.
+     * The file's kebab-case name is still printed, on a line of its own: it is
+     * what the model needs to point at a rule and to map it to the file it would
+     * have to edit, and it repeats no words from the title or the body.
      * @param {{data?: object | null} | null} slot - this directory's cache entry.
      * @returns {string} the section, or ''.
      */
@@ -1390,12 +1397,13 @@ export function apply(ctx, rawConfig) {
       const rules = Array.isArray(data.rules) ? data.rules : []
       if (rules.length > 0) {
         const lines = [`**本项目规则**（必须遵守；来自 \`.agents/rules/\`，共 ${rules.length} 条）`]
-        rules.forEach((rule, index) => {
-          const name = String(rule?.name ?? '')
-          const title = String(rule?.title ?? name)
-          lines.push(`${index + 1}. **${title}**（\`${name}\`）`)
-          // Indented under its own heading so a multi-line rule cannot be
-          // mistaken for the next rule's title.
+        rules.forEach((rule) => {
+          // No per-rule heading line: the rule file already carries its own
+          // `# title`, so printing the title again only repeated the same words
+          // twice in a row. The whole body is indented uniformly, which is what
+          // keeps the file's own heading and sub-headings intact.
+          const name = String(rule?.name ?? '').trim()
+          if (name) lines.push(`  \`${name}\``)
           for (const contentLine of String(rule?.content ?? '').split('\n')) {
             if (contentLine.trim()) lines.push(`  ${contentLine}`)
           }
@@ -2098,6 +2106,7 @@ const ANCHOR_HEADER = [
   '',
   '- 用户对项目的约定、规则、限制，调用 `rule_add` 写成 `.agents/rules/<name>.md`（一条规则一份文件）。',
   '- 不要用 `memory_add` 存规则。',
+  '- 建规则前先读项目根的 AGENTS.md：它已由 DSH 注入每个会话，规则正文大部分已在其中时会被拒绝写入；且不要改动 AGENTS.md，它属于用户。',
   '',
   '**技能固化**：',
   '',

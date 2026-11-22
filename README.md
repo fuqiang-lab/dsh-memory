@@ -196,8 +196,11 @@ score = similarity × (0.2 + 0.8 × R)
 用户对项目的约定、规则、限制（例如“注释用中文”“不要写 release 分支”）不是记忆条目，而是**一条一份的 markdown 文件**，放在项目根目录的 `.agents/rules/`：
 
 - 文件名 kebab-case（如 `project-memory-file-location.md`）；frontmatter 含 `name` / `description` / `metadata.origin` / `metadata.title` / `metadata.created-at`，正文以 `# <中文标题>` 开头，后面是规则本身；
-- 模型用 `rule_add` 写入（同名文件不覆盖，先读再改）；插件在会话首次装配系统提示词时自动读取并注入全部规则（不超过 2400 字 / 12 条）；
+- 模型用 `rule_add` 写入（同名文件不覆盖，先读再改）；插件在会话首次装配系统提示词时自动读取并注入全部规则（不超过 2400 字 / 12 条）。注入时不再给每条规则另加一行加粗小标题——规则正文第一行本来就是 `# <中文标题>`，再加一行只会把同一个标题连写两遍；
+- 写入前先与项目根的 `AGENTS.md` 比对（大小写不敏感，`agents.md` 同样识别；代码块里的示例不算）：规则正文按子句切分后**有 70% 以上能在 `AGENTS.md` 里逐字找到**就判定“已经记录”，返回 `conflict` 并说明是哪份文件。DSH 本身会把 `AGENTS.md` 注入每个会话，再建一条同样的规则等于让同一约束在上下文里出现两次；
 - 规则是**要求**而不是做过的工作：不写记忆库、不参与召回、不进入全局摘要。它与 `.agents/memory/` 下按日的工作记录分开，避免“做过什么”和“应该怎么做”混在一起；规则文件进版本库，工作记录是派生文件、可忽略或跟踪。
+
+**memory 系统不主动编辑 `AGENTS.md`。** 这份文件属于用户：去重检查只**读**它，从不改写、追加或搬移内容。想让某条约束改由 `AGENTS.md` 承载、或改写其中的表述，请自己编辑该文件；模型也不应为了“让规则写进去”而替你改它。
 
 ### 检索路径
 
@@ -283,7 +286,7 @@ python -m memory_system --list              # 查看支持的命令
 ### 项目记忆与规则相关的命令
 
 - `project.context`：读取当前项目的记忆摘录与规则。请求 `{"cwd": "...", "memory_chars"?: 1200, "max_rules"?: 12, "rule_chars"?: 2400, "recent_limit"?: 8}`；返回 `{"project_id", "root_path", "memory": {"dir", "path", "exists", "files", "days", "chars", "updated", "excerpt", "truncated", "legacy"}, "rules_dir", "rules": [{"name", "title", "description", "path", "chars", "content"}], "rules_truncated", "recent": [{"summary"}]}`。`dir` 是 `.agents/memory/` 目录，`path` 是最新一天的日文件（没有日文件时为旧单文件 `MEMORY.md`），`files` / `days` 是读到的日文件路径与日期（新的在前），`chars` 是所有日文件的字数之和，`legacy` 表示这次读的是旧的单文件布局。没有可读记录时（`memory.exists=false`）`recent` 给出该项目最新的 L2 工作条目作兜底；第一次访问一个 checkout 时会先把日文件写出来。
-- `rule.write`：把一条规则写成 `<projectRoot>/.agents/rules/<name>.md`。请求 `{"cwd": "...", "name": "kebab-case", "title": "...", "description": "...", "content": "..."}`，返回 `{"path", "name", "project_id", "root_path"}`；同名文件已存在时返回 `conflict`，不覆盖。
+- `rule.write`：把一条规则写成 `<projectRoot>/.agents/rules/<name>.md`。请求 `{"cwd": "...", "name": "kebab-case", "title": "...", "description": "...", "content": "..."}`，返回 `{"path", "name", "project_id", "root_path"}`。两种 `conflict`：同名文件已存在（不覆盖）；或正文的大部分子句（≥70%）已经出现在项目根的 `AGENTS.md` 里——该文件本来就注入每个会话，再建规则等于重复加载。后一种情况只读取 `AGENTS.md` 用于比对，**绝不改写它**。
 
 `status` 的返回里，`project_memory` 是当前项目记忆**目录** `.agents/memory/` 的路径，`project_rules` 是规则目录的路径；旧的 `project_summary` 键仍保留，现在指向最新一天的日文件（还没有日文件时指向旧单文件 `MEMORY.md`，两者都没有则为 `null`）。
 

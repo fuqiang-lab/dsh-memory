@@ -26,6 +26,7 @@ from memory_system.project_files import (
     LEGACY_PROJECT_SUMMARY_FILE,
     PROJECT_MEMORY_DIR_RELATIVE,
     PROJECT_SUMMARY_MARKER,
+    agents_duplicate,
     create_rule,
     day_memory_path,
     legacy_memory_path,
@@ -504,6 +505,97 @@ def test_create_rule_rejects_a_bad_name(tmp_path: Path, name: str):
         create_rule(tmp_path, name=name, title="标题", description="说明", content="正文")
     # Validation happens before any directory/file is created.
     assert not rules_dir(tmp_path).exists()
+
+
+# ── duplicating AGENTS.md ───────────────────────────────────────────────
+
+
+def test_create_rule_refuses_a_rule_agents_md_already_states(tmp_path: Path):
+    # The layout the `animation` checkout actually carries: a lowercase
+    # `agents.md` whose table already names every directory.
+    (tmp_path / "agents.md").write_text(
+        "# animation\n\n## 约定\n\n"
+        "- 中间产物只进 `Temp/`；`Output/` 只放成品，不放脚本与缓存。\n"
+        "- `Input/` 与 `References/` 为只读素材，不覆盖、不改名、不删除。\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConflictError) as raised:
+        create_rule(
+            tmp_path,
+            name="temp-only",
+            title="中间产物归 Temp",
+            description="规定中间产物放在哪",
+            content=(
+                "中间产物只进 `Temp/`；`Output/` 只放成品，不放脚本与缓存。\n"
+                "`Input/` 与 `References/` 为只读素材，不覆盖、不改名、不删除。"
+            ),
+        )
+
+    # The refusal names the file that already says it, and nothing was written.
+    assert "agents.md" in str(raised.value)
+    assert not rules_dir(tmp_path).exists()
+
+
+def test_create_rule_accepts_a_rule_agents_md_does_not_state(tmp_path: Path):
+    (tmp_path / "AGENTS.md").write_text(
+        "# project\n\n- 中间产物只进 `Temp/`。\n", encoding="utf-8"
+    )
+
+    path = create_rule(
+        tmp_path,
+        name="pdf-archive",
+        title="PDF 归档格式",
+        description="规定导出 PDF 的格式",
+        content="所有 PDF 必须导出为 PDF/A-2b。\n交付前用 veraPDF 验一遍合规性。",
+        created_at="2026-11-07T09:00:00+00:00",
+    )
+
+    assert path.is_file()
+    # Only the rule file was created: AGENTS.md belongs to the user and is only
+    # ever read, never rewritten by the memory system.
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == (
+        "# project\n\n- 中间产物只进 `Temp/`。\n"
+    )
+
+
+def test_agents_duplicate_ignores_fenced_examples(tmp_path: Path):
+    # A command sample is an example of the instruction, not the instruction
+    # itself, so a rule about that command is not a duplicate of it.
+    (tmp_path / "AGENTS.md").write_text(
+        "# project\n\n- 发布前先跑检查。\n\n```powershell\nnpm run verify:all\nnpm run lint\n```\n",
+        encoding="utf-8",
+    )
+
+    assert agents_duplicate(tmp_path, "npm run verify:all\nnpm run lint") is None
+
+
+def test_agents_duplicate_ignores_the_rules_own_title_heading(tmp_path: Path):
+    # render_rule() repeats the title in the body as a `# title` heading. That
+    # heading names the rule, so it must not be counted as a clause only the
+    # rule carries -- otherwise a rule whose body is *entirely* in AGENTS.md
+    # still scores below the threshold and gets written anyway.
+    (tmp_path / "AGENTS.md").write_text(
+        "# project\n\n- 中间产物只进 `Temp/`；`Output/` 只放成品。\n", encoding="utf-8"
+    )
+    body = "# 中间产物归 Temp\n\n中间产物只进 `Temp/`；`Output/` 只放成品。"
+
+    found = agents_duplicate(tmp_path, body, title="中间产物归 Temp")
+
+    assert found is not None
+    assert found[1] == 1.0
+
+
+def test_agents_duplicate_is_inert_without_an_instruction_file(tmp_path: Path):
+    assert agents_duplicate(tmp_path, "中间产物只进 `Temp/`；`Output/` 只放成品。") is None
+    # ... and the write still succeeds there.
+    assert create_rule(
+        tmp_path,
+        name="temp-only",
+        title="中间产物",
+        description="说明",
+        content="中间产物只进 `Temp/`；`Output/` 只放成品。",
+    ).is_file()
 
 
 @pytest.mark.parametrize(

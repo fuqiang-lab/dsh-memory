@@ -28,6 +28,13 @@ writes one file per rule through ``rule_add`` / ``rule.write``; the plugin reads
 them back for the system prompt. Rules do not enter L2, L3 or the digest: they
 are requirements, not work that was done.
 
+**``AGENTS.md`` is read, never written.** DSH loads that file into every session
+on its own, so a rule repeating what it already says would put the same
+constraint in the context twice. ``create_rule`` therefore compares the new body
+against ``AGENTS.md`` (:func:`agents_duplicate`) and refuses the duplicate. The
+comparison is the only contact this module has with that file: it is the user's
+text, and nothing here rewrites, appends to or moves it.
+
 Why a single markdown per rule instead of one big file: a diff then names the
 rule that changed, two authors rarely edit the same rule, and a retired rule is
 a file deletion instead of an in-place edit that loses its history. The YAML
@@ -82,6 +89,24 @@ PROJECT_RULES_RELATIVE = RULES_DIR.as_posix()
 _UPDATED = re.compile(r"更新于\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _RULE_HEADING = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 
+#: The workspace instruction file DSH reads into every session
+#: (``.agents/rules`` is *not* scanned by DSH, which is why this module reads it
+#: separately). Used only to refuse a duplicate rule: the memory system never
+#: writes this file — the user owns it.
+INSTRUCTION_FILE = "AGENTS.md"
+
+#: How much of a rule body must already appear in ``AGENTS.md`` before the write
+#: is refused. Exact sub-phrase matching alone would miss the common case (the
+#: same constraint worded nearly the same), while a low bar would reject rules
+#: that merely share vocabulary with the instruction file. Three quarters of the
+#: body's clauses is the point where "this is already recorded" is the honest
+#: reading; anything below is a rule that says something new.
+AGENTS_DUPLICATE_RATIO = 0.7
+
+#: A clause shorter than this carries no checkable meaning ("必须", "见上"), so it
+#: is dropped instead of being counted as a match or a miss.
+_MIN_CLAUSE_CHARS = 8
+
 
 # ══ paths ═══════════════════════════════════════════════════════════════
 
@@ -99,6 +124,25 @@ def day_memory_path(project_root: Path | str, day: str) -> Path:
 def rules_dir(project_root: Path | str) -> Path:
     """The directory scanned for this checkout's one-file-per-rule Markdown."""
     return Path(project_root) / RULES_DIR
+
+
+def instruction_path(project_root: Path | str) -> Path | None:
+    """The checkout's ``AGENTS.md``, or ``None`` when it has none.
+
+    Matched case-insensitively: DSH itself looks for the exact candidate name,
+    but a checkout edited on Windows routinely holds ``agents.md`` (the
+    ``animation`` workspace does), and a rule that repeats that file is a
+    duplicate whatever the casing. Only the file's *location* is resolved here;
+    this module never writes it.
+    """
+    root = Path(project_root)
+    try:
+        for entry in root.iterdir():
+            if entry.is_file() and entry.name.lower() == INSTRUCTION_FILE.lower():
+                return entry
+    except OSError:
+        return None
+    return None
 
 
 def legacy_memory_path(project_root: Path | str) -> Path:
@@ -376,6 +420,84 @@ def write_memory_files(
 
 # ══ project rules (one Markdown per rule) ═══════════════════════════════
 
+#: Clause breaks used when comparing a rule with ``AGENTS.md``. Newlines,
+#: punctuation and the list/table markers all end one instruction and start the
+#: next; the separators themselves carry no meaning to compare.
+_CLAUSE_SPLIT = re.compile(r"[\n\r。；;！!？?、|]+")
+#: Characters that mean nothing when asking "does this text already say that?".
+#: Backticks and emphasis go because the same instruction is written with and
+#: without them in a rule file and in ``AGENTS.md``; comparison is otherwise
+#: exact, so no stemming or fuzzy matching can turn a new rule into a duplicate.
+_CLAUSE_NOISE = re.compile(r"[`*_#>~\-\[\]()（）「」『』“”\"'，,：:.\s]+")
+
+
+def _clauses(text: str) -> list[str]:
+    """Meaningful clauses of ``text``, normalized for a containment test."""
+    out: list[str] = []
+    for raw in _CLAUSE_SPLIT.split(text):
+        normalized = _CLAUSE_NOISE.sub("", raw)
+        if len(normalized) >= _MIN_CLAUSE_CHARS:
+            out.append(normalized)
+    return out
+
+
+def _instruction_text(text: str) -> str:
+    """``AGENTS.md`` without its fenced code blocks.
+
+    A command sample inside a fence is an example of the instruction, not the
+    instruction: keeping it would let a rule quoting the same command look
+    duplicated, and would make the comparison depend on which code sample the
+    file happens to carry.
+    """
+    kept: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if not fenced:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def agents_duplicate(
+    project_root: Path | str, content: str, *, title: str = ""
+) -> tuple[Path, float] | None:
+    """Whether ``AGENTS.md`` already records this rule body.
+
+    Returns ``(path, ratio)`` when it does — the instruction file the rule
+    repeats and how much of the body it covers — and ``None`` otherwise.
+
+    The title is left out of the comparison and so is a body's own ``# title``
+    heading: a rule restating an instruction still needs its own name, so the
+    title would otherwise be counted as text that only the rule has.
+
+    This is a *read*. ``AGENTS.md`` belongs to the user: the memory system
+    refuses to duplicate what it already says and never edits it.
+    """
+    path = instruction_path(project_root)
+    if path is None:
+        return None
+    try:
+        instruction = _instruction_text(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    haystack = _CLAUSE_NOISE.sub("", instruction)
+    if not haystack:
+        return None
+    # ``render_rule`` repeats the title in the body as a ``# title`` heading;
+    # that heading is the rule's *name*, not a constraint, so match it against
+    # the title rather than letting it count as text only the rule has.
+    skip = _CLAUSE_NOISE.sub("", str(title or ""))
+    clauses = [c for c in _clauses(_rule_body(content)) if c != skip]
+    if not clauses:
+        return None
+    covered = sum(1 for clause in clauses if clause in haystack)
+    ratio = covered / len(clauses)
+    if ratio < AGENTS_DUPLICATE_RATIO:
+        return None
+    return path, ratio
+
 
 def _rule_body(body: str) -> str:
     """The rule text without the duplicated ``# title`` heading."""
@@ -536,6 +658,11 @@ def create_rule(
     caller must resolve by editing the existing file. That is the same
     "duplicate means look first" rule the skill authoring path follows, and it
     keeps a rule's history in the file instead of silently replacing it.
+
+    A rule the checkout's ``AGENTS.md`` already states is refused too — see
+    :func:`agents_duplicate`. That file is injected into every session on its
+    own, so writing the same constraint as a rule would load it twice. The check
+    reads ``AGENTS.md`` and never rewrites it: that file belongs to the user.
     """
     clean_name = validate_rule_name(name)
     clean_title = " ".join(str(title or "").split())
@@ -557,6 +684,19 @@ def create_rule(
         raise ConflictError(
             f"rule {clean_name} already exists at {path}; read it and edit that file "
             "instead of creating a duplicate"
+        )
+    # Before writing: is this constraint already in the workspace instruction
+    # file? It is injected into every session on its own, so a rule repeating it
+    # would put the same text in the prompt twice. Only reads AGENTS.md.
+    duplicate = agents_duplicate(project_root, body, title=clean_title)
+    if duplicate is not None:
+        source, ratio = duplicate
+        raise ConflictError(
+            f"rule {clean_name} is already recorded in {source} "
+            f"({ratio:.0%} of the rule's clauses appear there); that file is already "
+            "injected into every session, so create a rule only for what it does not "
+            "say. The memory system never edits AGENTS.md — change that file yourself "
+            "if the wording belongs there"
         )
     stamp = created_at or to_iso(utcnow())
     text = render_rule(
