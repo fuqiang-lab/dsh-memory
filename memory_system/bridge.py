@@ -860,7 +860,11 @@ def cmd_memory_remember(memory: MemorySystem, payload: dict[str, Any]) -> dict[s
         project_id=project,
         summary=summary,
         importance=payload.get("importance"),
-        event_type=payload.get("event_type") or "manual",
+        # No default here: an absent ``event_type`` stays absent, and
+        # ``l2.add`` coerces anything the caller did send onto the allowlist. A
+        # hard-coded "manual" fallback made every unlabelled record look like a
+        # deliberate work entry of a kind nobody had actually chosen.
+        event_type=payload.get("event_type"),
         participants=payload.get("participants"),
         outcome=payload.get("outcome"),
         session_key=payload.get("session_key"),

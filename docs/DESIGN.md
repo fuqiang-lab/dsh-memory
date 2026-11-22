@@ -1,6 +1,6 @@
 # DSH Memory — 系统设计
 
-本文档描述 `memory-system` 的架构、接口契约，以及**与原始设计方案不一致之处**。实现代码在 `memory_system/`，测试在 `tests/`（312 项，全部通过）。
+本文档描述 `memory-system` 的架构、接口契约，以及**与原始设计方案不一致之处**。实现代码在 `memory_system/`，测试在 `tests/`（331 项，全部通过）。
 
 > 目标 Agent 是 DeepSeek Harness，但核心不依赖 DSH：没有任何 `memory_system.*` 模块 import `@deepseek-ai/*`。宿主接入通过 `memory_system/adapters/turns.py` 定义的端口完成。
 
@@ -321,7 +321,7 @@ memory_system/
   adapters/
     turns.py       宿主端口（NormalizedEvent / TurnContext / ProjectResolver）
     dsh.py         DSH 接口桩（未实现，仅记录绑定点）
-tests/             312 项
+tests/             331 项
 ```
 
 **digest 的遗忘承诺**：digest 是宿主唯一注入提示词的路径，因此它与检索遵守同一条

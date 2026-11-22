@@ -264,7 +264,41 @@ def test_recent_never_resurfaces_user_forgotten_episodes(memory: MemorySystem, p
     assert gone["memory_id"] in {ep.memory_id for ep in memory.recent_episodes(project, limit=10)}
 
 
-def test_forgotten_id_lookup_chunks_its_in_list(memory: MemorySystem, project: str):
+def test_event_type_is_coerced_onto_an_allowlist(memory: MemorySystem, project: str):
+    """``event_type`` is free text in SQLite, so the write path must police it.
+
+    The column feeds the work log and the digest, both of which render the value
+    as the *kind of work done*. An arbitrary string from a tool call or a model
+    reply used to be stored verbatim, so a bogus label became a bogus record of
+    work. Unknown values now fall back to ``note`` -- the summary is kept, only
+    the label is corrected -- and an absent label stays absent.
+    """
+    unknown = memory.remember(project_id=project, summary="模型编了个类型", event_type="whatever")
+    assert memory.l2.get(unknown["memory_id"]).event_type == "note"
+
+    mixed_case = memory.remember(project_id=project, summary="大小写不同", event_type="  FIX  ")
+    assert memory.l2.get(mixed_case["memory_id"]).event_type == "fix"
+
+    unlabelled = memory.l2.add(project_id=project, summary="调用方没给标签")
+    assert memory.l2.get(unlabelled.memory_id).event_type is None
+
+    empty = memory.remember(project_id=project, summary="空字符串标签", event_type="")
+    assert memory.l2.get(empty["memory_id"]).event_type == "note"
+
+
+def test_notepad_edit_cannot_smuggle_an_unknown_event_type(
+    memory: MemorySystem, project: str
+):
+    """The notepad patch path writes the column directly, bypassing ``add``."""
+    from memory_system.summary import MemoryNotepad
+
+    created = memory.remember(project_id=project, summary="待改类型", event_type="fix")
+    notepad = MemoryNotepad(memory)
+    updated = notepad.update(created["memory_id"], {"event_type": "postmortem"})
+    assert updated["event_type"] == "postmortem"  # allowlisted values pass through
+
+    notepad.update(created["memory_id"], {"event_type": "definitely-not-a-type"})
+    assert memory.l2.get(created["memory_id"]).event_type == "note"
     """``_forgotten_ids`` is asked about every episode id cited by a whole
     subgraph (communities and retrieval chain the sources of each edge), so the
     list is thousands long. A single ``IN (...)`` blows past SQLite's cap on

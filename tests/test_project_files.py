@@ -189,7 +189,7 @@ def test_excerpt_keeps_only_day_headings_and_work_lines(tmp_path: Path):
     assert result["truncated"] is False
 
 
-def test_excerpt_joins_newest_first_and_truncates_on_a_line_boundary(tmp_path: Path):
+def test_excerpt_joins_newest_first_and_truncates_on_an_entry_boundary(tmp_path: Path):
     older = generated_memory_text(
         "2026-11-06",
         updated="2026-11-06 18:00:00",
@@ -207,20 +207,64 @@ def test_excerpt_joins_newest_first_and_truncates_on_a_line_boundary(tmp_path: P
     assert full["excerpt"].index("## 2026-11-07") < full["excerpt"].index("## 2026-11-06")
     assert full["excerpt"].endswith("昨天的记录")
 
+    # A ceiling that fits only the newer day drops the older day whole: no
+    # dangling heading and no line cut mid-token.
+    one_day = "## 2026-11-07\n- `09:30` （fix）今天的记录"
+    kept = read_project_memory(tmp_path, max_chars=len(one_day) + 5)
+    assert kept["truncated"] is True
+    assert kept["excerpt"] == one_day
+    assert "2026-11-06" not in kept["excerpt"]
+
+    # Below one day's size the heading still dates the block; the `truncated`
+    # flag is what tells the host there is more.
     first_line = "## 2026-11-07"
     whole = read_project_memory(tmp_path, max_chars=len(first_line))
     assert whole["truncated"] is True
     assert whole["excerpt"] == first_line
 
-    partial = read_project_memory(tmp_path, max_chars=len(first_line) + 6)
-    assert partial["truncated"] is True
-    assert partial["excerpt"].startswith(first_line)
-    assert len(partial["excerpt"]) <= len(first_line) + 6
-    assert partial["excerpt"] != whole["excerpt"]
-
     empty = read_project_memory(tmp_path, max_chars=0)
     assert empty["excerpt"] == ""
     assert empty["truncated"] is True
+
+
+def test_excerpt_never_ends_on_a_day_heading_with_no_entries(tmp_path: Path):
+    """A heading whose entries were all cut away would read as an empty day."""
+    newer = generated_memory_text("2026-11-07", entries=["- `09:30` （fix）今天的记录"])
+    older = generated_memory_text("2026-11-06", entries=["- `18:00` （note）昨天的记录"])
+    write_memory_file(tmp_path, newer, "2026-11-07")
+    write_memory_file(tmp_path, older, "2026-11-06")
+
+    today_block = "## 2026-11-07\n- `09:30` （fix）今天的记录"
+    # Room for today's whole block plus the older ``## 2026-11-06`` heading, but
+    # not for the entry under it.
+    result = read_project_memory(tmp_path, max_chars=len(today_block) + 20)
+
+    assert result["truncated"] is True
+    assert result["excerpt"] == today_block
+    assert not result["excerpt"].rstrip().splitlines()[-1].startswith("## ")
+
+
+def test_excerpt_never_cuts_a_work_entry_in_half(tmp_path: Path):
+    """A capped excerpt must end on a complete entry, not mid-line.
+
+    The budget is applied to whole ``- `` lines: an earlier implementation
+    appended ``line[:room]``, so the injected block could end ``…跑一次
+    selfchec`` -- text that looks like a statement but is not one.
+    """
+    entries = [f"- `{10 + i:02d}:00` （fix）完成了第 {i} 项改动并验证通过" for i in range(6)]
+    text = generated_memory_text("2026-11-07", entries=entries)
+    write_memory_file(tmp_path, text, "2026-11-07")
+
+    for cap in range(1, len(text) + 1):
+        result = read_project_memory(tmp_path, max_chars=cap)
+        excerpt = result["excerpt"]
+        assert len(excerpt) <= cap, f"cap {cap} exceeded: {len(excerpt)} chars"
+        if not excerpt:
+            continue
+        for line in excerpt.splitlines():
+            if line.startswith("- "):
+                # Every surviving work line is one of the original entries.
+                assert line in entries, f"cap {cap} produced a partial entry: {line!r}"
 
 
 def test_a_legacy_single_file_is_read_until_it_is_converted(tmp_path: Path):
@@ -680,7 +724,7 @@ def test_write_summaries_converts_the_single_file_layout(
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text(generated_memory_text("2026-11-01"), encoding="utf-8")
     memory.ensure_project(project, display_name="Project A", root_path=str(root))
-    memory.remember(project_id=project, summary="新布局的第一条记录", event_type="note")
+    memory.remember(project_id=project, summary="新布局的第一条记录", event_type="fix")
 
     write_project_summaries(memory)
 
@@ -701,7 +745,7 @@ def test_a_hand_written_root_file_survives_the_migration(
     handwritten = "# 我自己的笔记\n- 这条不是生成的文件，不能删除\n"
     legacy.write_text(handwritten, encoding="utf-8")
     memory.ensure_project(project, display_name="Project A", root_path=str(root))
-    memory.remember(project_id=project, summary="新位置的工作", event_type="note")
+    memory.remember(project_id=project, summary="新位置的工作", event_type="fix")
 
     write_project_summaries(memory)
 

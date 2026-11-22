@@ -42,6 +42,30 @@ STATE_DORMANT = "dormant"
 STATE_ARCHIVED = "archived"
 STATES = (STATE_ACTIVE, STATE_DORMANT, STATE_ARCHIVED)
 
+# The one place an ``event_type`` value is decided. The column is free text in
+# SQLite, so without this an arbitrary string from a tool call or a model reply
+# ("test", "note", "whatever") was stored verbatim -- and the work log and the
+# digest render ``event_type`` as the kind of work done, so a bogus value became
+# a bogus record of work. ``note`` is the catch-all for "the model wanted to
+# record something but did not say what kind"; it is *not* work (see
+# ``summary.NON_WORK_EVENT_TYPES``) and must not be rendered as such.
+EVENT_TYPES = ("decision", "preference", "fix", "fact", "note", "incident", "postmortem", "manual")
+DEFAULT_EVENT_TYPE = "note"
+
+
+def coerce_event_type(value: Any, *, default: str = DEFAULT_EVENT_TYPE) -> str:
+    """Map an arbitrary ``event_type`` onto the allowlist.
+
+    Unknown, empty and non-string values fall back to ``default`` rather than
+    raising: the write is worth keeping even when the label is wrong, and
+    rejecting it would lose the summary over a cosmetic field.
+    """
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in EVENT_TYPES:
+            return text
+    return default if default in EVENT_TYPES else DEFAULT_EVENT_TYPE
+
 
 def new_memory_id() -> str:
     # Time-sortable prefix keeps SQLite locality good and makes ids debuggable.
@@ -232,6 +256,11 @@ class EpisodicMemory:
         if not summary:
             raise ValueError("summary must be non-empty")
         importance = self._coerce_importance(importance)
+        # A ``None`` event_type stays ``None``: "unlabelled" is a distinct state
+        # from "the model explicitly said note", and the schema allows it.
+        # Anything else is forced onto the allowlist.
+        if event_type is not None:
+            event_type = coerce_event_type(event_type)
         h = summary_hash(summary)
         if dedup:
             existing = self._find_duplicate(project_id, summary, h, content_key)

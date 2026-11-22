@@ -36,6 +36,7 @@ from memory_system.summary import (
     MemoryNotepad,
     _digest_label,
     coerce_length,
+    collect_materials,
     export_markdown,
     nearest_preset,
 )
@@ -366,12 +367,48 @@ def test_commit_writes_each_project_day_record(service: DigestService, memory: M
     assert kept["memory_id"] != gone["memory_id"]
 
 
+def test_notes_are_recallable_but_not_rendered_as_work(
+    service: DigestService, memory: MemorySystem, tmp_path: Path
+):
+    """``note`` is the write path's catch-all label, not a claim of work done.
+
+    ``memory_add`` defaults ``event_type`` to ``note`` and every unknown value is
+    coerced to it, so "the model jotted something down" reached the day files
+    and the digest looking exactly like "this was accomplished". Notes stay
+    findable through recall and the notepad; they are just not evidence of work.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    memory.ensure_project("proj-note", display_name="Notes", root_path=str(root))
+    memory.remember(project_id="proj-note", summary="改了 auth 的登录竞态", event_type="fix")
+    jotted = memory.remember(project_id="proj-note", summary="随手记：也许要拆这个模块")
+    remember_unlabelled = memory.remember(project_id="proj-note", summary="没标类型的记录")
+
+    service.commit(text="## 全局\n工作记录")
+
+    content = list_memory_files(root)[0].read_text(encoding="utf-8")
+    assert "改了 auth 的登录竞态" in content
+    assert "随手记：也许要拆这个模块" not in content
+    assert "没标类型的记录" not in content
+
+    # Still recallable: the exclusion is about rendering, not retention.
+    found = memory.recall("随手记", project_id="proj-note")
+    assert jotted["memory_id"] in {hit.episode.memory_id for hit in found.episodes}
+    assert memory.l2.get(remember_unlabelled["memory_id"]).memory_id == remember_unlabelled["memory_id"]
+
+    # And absent from the digest materials for the same reason.
+    materials = collect_materials(memory, material_char_budget=10_000)
+    bodies = json.dumps(materials.episodes, ensure_ascii=False)
+    assert "改了 auth 的登录竞态" in bodies
+    assert "随手记：也许要拆这个模块" not in bodies
+
+
 def test_records_are_split_into_one_file_per_day(service: DigestService, memory: MemorySystem, tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
     memory.ensure_project("proj-days", display_name="Days", root_path=str(root))
     memory.remember(project_id="proj-days", summary="今天的工作", event_type="fix")
-    yesterday = memory.remember(project_id="proj-days", summary="昨天的工作", event_type="note")
+    yesterday = memory.remember(project_id="proj-days", summary="昨天的工作", event_type="fix")
     # Backdate one row to the previous UTC day; the derived files must split.
     previous = utcnow() - timedelta(days=1)
     memory.store.execute(
@@ -410,7 +447,7 @@ def test_bridge_memory_add_refreshes_the_project_markdown(tmp_path: Path):
         {
             "id": "1",
             "command": "memory.remember",
-            "payload": {"home": home, "cwd": str(repo), "summary": "接入了记忆工具", "event_type": "note"},
+            "payload": {"home": home, "cwd": str(repo), "summary": "接入了记忆工具", "event_type": "fix"},
         }
     )
     assert remembered["ok"], remembered
@@ -429,7 +466,7 @@ def test_project_markdown_stamp_follows_the_newest_record(tmp_path: Path):
     memory = MemorySystem(MemoryConfig.for_home(tmp_path / "home"))
     try:
         memory.ensure_project("proj-stamp", display_name="Stamp", root_path=str(root))
-        memory.remember(project_id="proj-stamp", summary="第一条", event_type="note")
+        memory.remember(project_id="proj-stamp", summary="第一条", event_type="fix")
         DigestService(memory).write_project_summaries(project_id="proj-stamp")
         files = list_memory_files(root)
         assert len(files) == 1
@@ -440,7 +477,7 @@ def test_project_markdown_stamp_follows_the_newest_record(tmp_path: Path):
         DigestService(memory).commit(text="## 全局\n新摘要")
         assert path.read_text(encoding="utf-8") == first
 
-        memory.remember(project_id="proj-stamp", summary="第二条", event_type="note")
+        memory.remember(project_id="proj-stamp", summary="第二条", event_type="fix")
         DigestService(memory).write_project_summaries(project_id="proj-stamp")
         second = path.read_text(encoding="utf-8")
         assert second != first
@@ -471,7 +508,7 @@ def test_bridge_project_registration_creates_the_day_record_file(tmp_path: Path)
         {
             "id": "2",
             "command": "memory.remember",
-            "payload": {"home": home, "cwd": str(nested), "summary": "第一条工作", "event_type": "note"},
+            "payload": {"home": home, "cwd": str(nested), "summary": "第一条工作", "event_type": "fix"},
         }
     )
     assert remembered["ok"], remembered
@@ -497,7 +534,7 @@ def test_bridge_project_context_returns_memory_excerpt_and_rules(tmp_path: Path)
                 "home": home,
                 "cwd": str(nested),
                 "summary": "接入了记忆工具",
-                "event_type": "note",
+                "event_type": "fix",
             },
         }
     )
@@ -690,7 +727,7 @@ def test_bridge_memory_add_cleans_up_the_generated_legacy_file(tmp_path: Path):
         {
             "id": "1",
             "command": "memory.remember",
-            "payload": {"home": home, "cwd": str(repo), "summary": "在新的位置记录工作", "event_type": "note"},
+            "payload": {"home": home, "cwd": str(repo), "summary": "在新的位置记录工作", "event_type": "fix"},
         }
     )
     assert remembered["ok"], remembered
@@ -713,7 +750,7 @@ def test_bridge_memory_add_keeps_a_hand_written_root_file(tmp_path: Path):
         {
             "id": "1",
             "command": "memory.remember",
-            "payload": {"home": home, "cwd": str(repo), "summary": "新位置的工作", "event_type": "note"},
+            "payload": {"home": home, "cwd": str(repo), "summary": "新位置的工作", "event_type": "fix"},
         }
     )
     assert remembered["ok"], remembered
@@ -920,10 +957,11 @@ def test_forget_keeps_memory_out_of_digest_materials(memory: MemorySystem, proje
     is the one thing a host injects), whatever recall does."""
     from memory_system.summary import MemoryNotepad, collect_materials
 
-    kept = memory.remember(project_id=project, summary="keep-me: oracle driver upgraded to v23")
+    kept = memory.remember(project_id=project, summary="keep-me: oracle driver upgraded to v23", event_type="fix")
     gone = memory.remember(
         project_id=project,
         summary="gone-me: temporary debug token minted in staging",
+            event_type="fix",
         facts=[{"head": "debug-token", "relation": "located_in", "tail": "staging"}],
     )
     notepad = MemoryNotepad(memory)
@@ -1110,7 +1148,7 @@ def test_bridge_status_reports_project(tmp_path: Path):
         {
             "id": "r",
             "command": "memory.remember",
-            "payload": {"home": home, "cwd": str(tmp_path), "summary": "状态测试记录"},
+            "payload": {"home": home, "cwd": str(tmp_path), "summary": "状态测试记录", "event_type": "fix"},
         }
     )
     assert remembered["ok"], remembered

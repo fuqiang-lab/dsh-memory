@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .errors import ConflictError, NotFoundError, ValidationError
+from .l2 import DEFAULT_EVENT_TYPE, coerce_event_type
 from .project_files import render_memory_day, write_memory_files
 from .storage import Store, to_iso, utcnow
 from .system import MemorySystem
@@ -94,10 +95,26 @@ DIGEST_PROJECT_LABEL_MAX = 24
 # a prefix and make every project look alike. The distinguishing part sits at
 # the end of the name, which is why the short label is the head-and-tail form.
 DIGEST_LABEL_HEAD_CHARS = 6
-# Preferences and raw user messages are not "work done"; the user profile and
-# recall already cover them. Keeping them out of the work log also keeps the
-# model from turning the global digest into a list of lessons.
-NON_WORK_EVENT_TYPES = ("preference", "user_message")
+# Preferences, raw user messages and free-form notes are not "work done". The
+# user profile and recall already cover the first two; ``note`` is the catch-all
+# the write path assigns when the caller did not say what kind of event a record
+# is (``memory_add``'s schema defaults to it, and every unknown value is coerced
+# to it). Rendering it as work turned "the model jotted something down" into
+# "this was accomplished", which is a claim the record does not support. Notes
+# stay recallable through ``memory_search`` and the notepad; they are simply not
+# evidence of work in the day files or the digest.
+#
+# ``user_message`` is an anchor event kind (``adapters.turns.EventKind``), not an
+# L2 ``event_type``: ``l2.add`` coerces it to ``note``, which this tuple already
+# covers. It is listed anyway because rows written before the allowlist existed
+# still carry it verbatim, and a migration that re-rendered them as work would
+# be the very bug this exclusion prevents.
+NON_WORK_EVENT_TYPES = ("preference", "user_message", DEFAULT_EVENT_TYPE)
+# The SQL side compares ``COALESCE(event_type, '')``, so an unlabelled row reads
+# as the empty string -- and an empty string is not in the tuple above, which let
+# every record written without a label render as work. ``note`` is where the
+# write path sends unlabelled-ish input anyway; treat the empty string the same.
+NON_WORK_EVENT_TYPE_KEYS = (*NON_WORK_EVENT_TYPES, "")
 
 _TABLE = """
 CREATE TABLE IF NOT EXISTS memory_digests (
@@ -396,7 +413,7 @@ def collect_materials(
     project_names = {p.project_id: (p.display_name or p.project_id) for p in projects}
 
     store = memory.store
-    excluded = ",".join("?" * len(NON_WORK_EVENT_TYPES))
+    excluded = ",".join("?" * len(NON_WORK_EVENT_TYPE_KEYS))
     episodes: list[dict[str, Any]] = []
     for pid in project_ids:
         rows = store.query(
@@ -405,7 +422,7 @@ def collect_materials(
             "AND json_extract(meta, '$.forgotten_at') IS NULL "
             f"AND COALESCE(event_type, '') NOT IN ({excluded}) "
             "ORDER BY created_at DESC LIMIT ?",
-            (pid, *NON_WORK_EVENT_TYPES, episodes_per_project),
+            (pid, *NON_WORK_EVENT_TYPE_KEYS, episodes_per_project),
         )
         for row in rows:
             episodes.append(
@@ -1001,14 +1018,14 @@ def _project_memory_days(
         )
         if row["day"]
     }
-    excluded = ",".join("?" * len(NON_WORK_EVENT_TYPES))
+    excluded = ",".join("?" * len(NON_WORK_EVENT_TYPE_KEYS))
     rows = memory.store.query(
         "SELECT summary, event_type, outcome, created_at FROM l2_episodes "
         "WHERE project_id = ? AND superseded_by IS NULL "
         "AND json_extract(meta, '$.forgotten_at') IS NULL "
         f"AND COALESCE(event_type, '') NOT IN ({excluded}) "
         "ORDER BY created_at DESC",
-        (project.project_id, *NON_WORK_EVENT_TYPES),
+        (project.project_id, *NON_WORK_EVENT_TYPE_KEYS),
     )
     entries: dict[str, list[str]] = {}
     updated: dict[str, str] = {}
@@ -1244,7 +1261,13 @@ class MemoryNotepad:
             sets.append("importance = ?")
             params.append(importance)
         if "event_type" in patch:
-            value = (str(patch["event_type"]).strip() or None) if patch["event_type"] is not None else None
+            # Same allowlist as the write path: a notepad edit can retype a row,
+            # and an unchecked value here would bypass ``l2.add``'s coercion.
+            value = (
+                coerce_event_type(patch["event_type"])
+                if patch["event_type"] is not None
+                else None
+            )
             sets.append("event_type = ?")
             params.append(value)
         if "outcome" in patch:

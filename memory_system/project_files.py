@@ -181,7 +181,20 @@ def _clean_memory_text(text: str) -> str:
 
 
 def _cap_lines(text: str, max_chars: int) -> tuple[str, bool]:
-    """Cut ``text`` to at most ``max_chars`` on a line boundary when possible."""
+    """Cut ``text`` to at most ``max_chars`` without splitting a memory entry.
+
+    The atomic unit is one ``- ...`` work line (or one ``## day`` heading): half
+    an entry states a fact that stops mid-token -- a real excerpt ended ``…跑一次
+    selfchec`` -- so the last unit that does not fit is dropped whole instead of
+    being cut to length, and ``truncated`` says the record continues.
+
+    A day heading that ends up last is dropped too: it would name a day whose
+    entries were all cut away, which reads as "nothing happened on 2026-11-06".
+    For the same reason the excerpt is often shorter than ``max_chars`` even
+    though more text exists -- a prompt block that ends on a complete entry reads
+    as an answer, while one cut at the limit reads as corruption. ``chars`` stays
+    the full size, so a host can still say how much was left out.
+    """
     if max_chars <= 0:
         return "", bool(text)
     if len(text) <= max_chars:
@@ -189,18 +202,21 @@ def _cap_lines(text: str, max_chars: int) -> tuple[str, bool]:
     out: list[str] = []
     used = 0
     for line in text.splitlines():
-        room = max_chars - used
-        if room <= 0:
+        cost = len(line) + (1 if out else 0)
+        if used + cost > max_chars:
             break
-        if len(line) + 1 <= room:
-            out.append(line)
-            used += len(line) + 1
-            continue
-        out.append(line[:room])
-        used = max_chars
-        break
-    excerpt = "\n".join(out).rstrip("\n")
-    return excerpt, True
+        out.append(line)
+        used += cost
+    # An orphaned heading dates a day with nothing under it; drop the heading
+    # itself rather than report an empty day.
+    while out and out[-1].startswith("## "):
+        out.pop()
+    if not out:
+        # Not even the first entry fits. A day heading is still worth keeping:
+        # it dates the block, and ``truncated`` carries the "there is more"
+        # signal the omitted entries would have given.
+        return text.splitlines()[0][:max_chars], True
+    return "\n".join(out), True
 
 
 def _generated_memory_files(project_root: Path | str) -> list[tuple[str, Path, str]]:

@@ -318,7 +318,19 @@ function parseMemories(reply) {
     return []
   }
   const raw = Array.isArray(parsed?.memories) ? parsed.memories : []
-  const allowed = new Set(['decision', 'preference', 'fix', 'fact', 'note'])
+  // Mirrors ``memory_system/l2.py``'s EVENT_TYPES. The backend coerces anything
+  // outside its list to ``note`` anyway, but keeping the same set here means a
+  // value the model was told to use is not silently downgraded on the way in.
+  const allowed = new Set([
+    'decision',
+    'preference',
+    'fix',
+    'fact',
+    'note',
+    'incident',
+    'postmortem',
+    'manual',
+  ])
   const items = []
   for (const entry of raw) {
     const summary = typeof entry?.summary === 'string' ? entry.summary.trim() : ''

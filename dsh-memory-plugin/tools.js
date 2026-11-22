@@ -294,7 +294,13 @@ export function buildTools({
         '把一条值得长期记住的内容写入记忆库：用户明确的偏好、项目约定与决策、踩过的坑及其原因。不要记录闲聊，也不要记录能从代码直接读到的内容。',
       parameters: {
         summary: { type: 'string', required: true, description: '一句话说明要记住的内容，含关键实体与结论。' },
-        event_type: { type: 'string', description: 'decision / preference / fix / fact / note，默认 note。' },
+        event_type: {
+          type: 'string',
+          description:
+            'decision / preference / fix / fact / note / incident / postmortem / manual。' +
+            '只有 decision、fix、fact、incident、postmortem、manual 会被当作"已做过的工作"写进项目工作记录；' +
+            'note（默认）与 preference 仍可检索，但不计入工作记录。其他值一律归为 note。',
+        },
         importance: { type: 'number', description: '0 到 1，默认 0.6。' },
         outcome: { type: 'string', description: 'success / failure / neutral。' },
         facts: {

@@ -57,6 +57,11 @@ TEMPORAL_MARKERS = ("以前", "之前", "当时", "历史", "曾经", "以前是
 class RoutePlan:
     kind: QueryKind
     use_deep: bool
+    # True only when the caller named ``mode="deep"``. The router's own
+    # relational/global guess, and the ``fast_path_thin`` auto-promotion, both
+    # set ``use_deep`` without earning this flag: they may still run PPR to rank
+    # communities and rewrites, but they must not inject facts on their own.
+    explicit: bool = False
     reasons: list[str] = field(default_factory=list)
     latency_us: int = 0
 
@@ -154,7 +159,12 @@ class SearchResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "query": self.query,
-            "route": {"kind": self.route.kind, "deep": self.route.use_deep, "reasons": self.route.reasons},
+            "route": {
+                "kind": self.route.kind,
+                "deep": self.route.use_deep,
+                "explicit": self.route.explicit,
+                "reasons": self.route.reasons,
+            },
             "facts": [f.to_dict() for f in self.facts],
             "episodes": [e.to_dict() for e in self.episodes],
             "communities": [c.to_dict() for c in self.communities],
@@ -240,6 +250,7 @@ class Retriever:
             plan.reasons.append("explicit_fast")
         elif options.mode == "deep":
             plan.use_deep = True
+            plan.explicit = True
             plan.reasons.append("explicit_deep")
         result = SearchResult(query=query, route=plan, facts=[], episodes=[])
         if not query or not project_ids:
@@ -281,7 +292,14 @@ class Retriever:
             t0 = time.perf_counter()
             try:
                 deep, communities, rewrites = self._deep_path(query, project_ids, options)
-                deep_lists.extend(deep)
+                # Facts produced by the deep path are only trustworthy when the
+                # caller asked for deep: PPR mass over an unweighted expansion
+                # ranks the whole graph, so a thin query would get a confident
+                # looking fact that has nothing to do with it. Communities and
+                # rewrites stay useful either way -- they are labelled as
+                # context, not as an answer keyed to the query.
+                if plan.explicit:
+                    deep_lists.extend(deep)
                 community_hits = communities
                 result.rewrites = rewrites
             except Exception as exc:  # noqa: BLE001

@@ -25,6 +25,45 @@ def build_graph(memory: MemorySystem, project: str) -> None:
         memory.l3.add_fact(project, FactInput(head=head, relation=relation, tail=tail, confidence=0.8))
 
 
+def test_auto_mode_never_injects_deep_facts(memory: MemorySystem, project: str):
+    """PPR ranks the whole graph, so its facts are only an answer on request.
+
+    ``auto`` used to auto-promote a query to the deep path whenever the fast
+    path returned fewer than three facts (``fast_path_thin``) and then let the
+    PPR hits into the fused answer as if they matched the question. A vague
+    query -- the exact case where the fast path is thin -- then got a confident
+    looking fact chosen by graph centrality instead of by relevance.
+    """
+    build_graph(memory, project)
+    # A relational marker routes to the deep path on its own, without an
+    # explicit ``mode``: that is the case that used to leak PPR facts.
+    query = "billing-service 和 postgres 的关系"
+    auto = memory.recall(query, project_id=project, mode="auto")
+    assert auto.route.use_deep is True  # the router asked for deep ...
+    assert auto.route.explicit is False  # ... but the caller did not
+    deep_sources = {"ppr", "rewrite"}
+    leaked = [f for f in auto.facts if f.source in deep_sources or set(f.path) & deep_sources]
+    assert leaked == [], f"deep-path facts leaked into an auto answer: {leaked}"
+
+
+def test_thin_fast_path_stays_thin_in_auto_mode(memory: MemorySystem, project: str):
+    """The thin trigger still runs the deep stage, it just keeps it out of facts."""
+    build_graph(memory, project)
+    CommunityIndex(memory.store, memory.l3, min_size=2).rebuild(project)
+    query = "billing-service 和 postgres 的关系"
+    auto = memory.recall(query, project_id=project, mode="auto")
+    assert auto.route.explicit is False
+    assert auto.degraded is None  # running the deep stage is not a failure
+
+    explicit = memory.recall(query, project_id=project, mode="deep")
+    assert explicit.route.explicit is True
+    # The same query under explicit deep does surface PPR-sourced facts.
+    explicit_sources = {f.source for f in explicit.facts} | {
+        part for f in explicit.facts for part in f.path
+    }
+    assert explicit_sources & {"ppr", "rewrite"}
+
+
 @pytest.mark.parametrize(
     ("query", "kind"),
     [
